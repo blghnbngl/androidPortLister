@@ -1,0 +1,125 @@
+
+
+1) This app will begin by showing the list of open ports.
+
+- First, create a GUI that the user can press a button to get the list of open ports.
+
+- Then, I should understand how can I get the list of open ports of a Linux system. But I need more than that, I should separate UNIX Domain Sockets and internet sockets.
+
+- Active internet connections have two states: ESTABLISHED or TIME_WAIT.
+
+netstat -n | grep -e 'ESTABLISHED\|TIME_WAIT' or netstat | grep http.
+
+Gets these connections. An examplary output
+
+tcp        0      0 192.168.1.136:55182     143.204.94.115:443      ESTABLISHED
+tcp        0      0 192.168.1.136:44656     172.217.169.194:443     ESTABLISHED
+tcp        0      0 192.168.1.136:33010     216.58.206.206:443      TIME_WAIT  
+tcp        0      0 192.168.1.136:55608     216.58.206.200:443      ESTABLISHED
+
+
+Or try this. netstat is deprecated
+
+ss -o state established '( sport = :http or sport = :https )' 
+
+Somehow, the above one does not work, so use 
+
+ss | grep http
+
+This gets both http and https connections
+
+
+- However it might be useful to check netstat source code. Unfortunately, /bin/ss and /bin/netstat are compiled. So I have to get their source codes from web.
+
+When checking the source, I realised the TCP ports info is taken via
+
+    INFO_GUTS6(_PATH_PROCNET_TCP, _PATH_PROCNET_TCP6, "AF INET (tcp)",
+	       tcp_do_one, "tcp", "tcp6");
+
+
+_PATH_PROCNET_TCP reads	 proc/net/tcp  ./lib/pathnames.h:15:#define _PATH_PROCNET_TCP		"/proc/net/tcp"
+
+
+
+These /proc interfaces provide information about currently active TCP 
+connections, and are implemented by tcp4_seq_show() in net/ipv4/tcp_ipv4.c
+and tcp6_seq_show() in net/ipv6/tcp_ipv6.c, respectively.
+
+It will first list all listening TCP sockets, and next list all established
+TCP connections. A typical entry of /proc/net/tcp would look like this (split 
+up into 3 parts because of the length of the line):
+
+   46: 010310AC:9C4C 030310AC:1770 01 
+   |      |      |      |      |   |--> connection state
+   |      |      |      |      |------> remote TCP port number
+   |      |      |      |-------------> remote IPv4 address
+   |      |      |--------------------> local TCP port number
+   |      |---------------------------> local IPv4 address
+   |----------------------------------> number of entry
+
+If it is in listening mode, remote address and port will be all 0 and connection state will be 0A. The states
+
+enum {
+    TCP_ESTABLISHED = 1,
+    TCP_SYN_SENT,
+    TCP_SYN_RECV,
+    TCP_FIN_WAIT1,
+    TCP_FIN_WAIT2,
+    TCP_TIME_WAIT,
+    TCP_CLOSE,
+    TCP_CLOSE_WAIT,
+    TCP_LAST_ACK,
+    TCP_LISTEN,
+    TCP_CLOSING,    /* Now a valid state */
+    TCP_NEW_SYN_RECV,
+
+    TCP_MAX_STATES  /* Leave at the end! */
+};
+
+
+#define INFO_GUTS6(file,file6,name,proc,prot4,prot6)	\
+ char buffer[8192];					\
+ int rc = 0;						\
+ int lnr = 0;						\
+ if (!flag_arg || flag_inet) {				\
+    INFO_GUTS1(file,name,proc,prot4)			\
+ }							\
+ if (!flag_arg || flag_inet6) {				\
+    INFO_GUTS2(file6,proc,prot6)			\
+ }							\
+ INFO_GUTS3
+
+To sum up, all three of INFO_GUTS1, INFO_GUTS2 and INFO_GUTS3 are being called.
+
+
+FILE *procinfo;
+
+#define INFO_GUTS1(file,name,proc,prot)			\
+  procinfo = proc_fopen((file));			\
+  if (procinfo == NULL) {				\
+    if (errno != ENOENT && errno != EACCES) {		\
+      perror((file));					\
+      return -1;					\
+    }							\
+    if (!flag_noprot && (flag_arg || flag_ver))		\
+      ESYSNOT("netstat", (name));			\
+    if (!flag_noprot && flag_arg)			\
+      rc = 1;						\
+  } else {						\
+    do {						\
+      if (fgets(buffer, sizeof(buffer), procinfo))	\
+        (proc)(lnr++, buffer,prot);			\
+    } while (!feof(procinfo));				\
+    fclose(procinfo);					\
+  }
+
+
+in tcp_do_one, this is being done to read:
+
+    num = sscanf(line,
+    "%d: %64[0-9A-Fa-f]:%X %64[0-9A-Fa-f]:%X %X %lX:%lX %X:%lX %lX %d %d %lu %*s\n",
+		 &d, local_addr, &local_port, rem_addr, &rem_port, &state,
+		 &txq, &rxq, &timer_run, &time_len, &retr, &uid, &timeout, &inode);
+
+
+- Then, I try to read the respective file in Java. I start by checking whether I can open it.

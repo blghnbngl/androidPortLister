@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">androidPortLister</string>
+    <string name="showPortsButton">Show Open Ports</string>
+    <string name="welcomeText">Welcome!</string>
+</resources>
